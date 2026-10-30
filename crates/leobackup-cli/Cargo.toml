@@ -1,0 +1,16 @@
+[package]
+name = "leobackup-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+leobackup-core = { path = "../leobackup-core" }
+leobackup-storage = { path = "../leobackup-storage" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true

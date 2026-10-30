@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/leobackup-core",
+    "crates/leobackup-storage",
+    "crates/leobackup-engine",
+    "crates/leobackup-daemon",
+    "crates/leobackup-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+# Crates efetivamente usadas na Fase 1.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+# Crates previstas nas próximas fases. Ficam declaradas aqui (Fase 1:
+# "Gerenciamento de Dependências") e serão vinculadas às crates donas
+# conforme cada fase for implementada, para não compilar código ainda
+# não utilizado.
+rusqlite = { version = "0.32", features = ["bundled"] }
+notify = "6"
+fastcdc = "3"
+blake3 = "1"
+zstd = "0.13"
+aes-gcm = "0.10"
