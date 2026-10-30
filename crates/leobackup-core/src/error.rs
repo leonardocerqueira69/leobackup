@@ -27,4 +27,20 @@ pub enum CoreError {
     /// Dado persistido ou recebido em formato inesperado.
     #[error("dado inválido: {0}")]
     InvalidData(String),
+
+    /// Falha durante o chunking.
+    #[error("erro de chunking: {0}")]
+    Chunking(String),
+
+    /// Falha durante compressão/descompressão.
+    #[error("erro de compressão: {0}")]
+    Compression(String),
+
+    /// Falha durante criptografia/descriptografia/autenticação.
+    #[error("erro de criptografia: {0}")]
+    Crypto(String),
+
+    /// Envelope de chunk ausente, truncado ou incompatível.
+    #[error("formato de chunk inválido: {0}")]
+    ChunkFormat(String),
 }

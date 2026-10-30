@@ -29,24 +29,44 @@ documentos do projeto.
   mantido por triggers.
 - `init` cria e migra o banco automaticamente.
 
-As fases 3 a 8 ainda não foram implementadas.
+### Fase 3 — Engine de Processamento (concluída)
+
+- Chunking com FastCDC (variante 2020) sobre fluxo, com parâmetros
+  validados contra os limites da crate.
+- BLAKE3 hexadecimal minúsculo como identidade de cada chunk.
+- Deduplicação consultando o índice **e** confirmando a presença do arquivo
+  em `data/`; chunks já armazenados não são recomprimidos nem recriptografados.
+- Compressão Zstandard e criptografia AES-256-GCM com nonce aleatório por
+  operação, em um envelope versionado (`LBK1`).
+- Escrita atômica de chunks: temporário no mesmo diretório, `sync_all` e
+  renomeação; chunk existente não é sobrescrito.
+- Commit transacional do arquivo e de `file_chunks` apenas depois que todos
+  os chunks estão no disco.
+- Detecção de origem alterada durante a leitura (tamanho/mtime) e falhas por
+  arquivo sem interromper o restante; snapshot vira `failed` se algo falhar.
+
+As fases 4 a 8 ainda não foram implementadas.
 
 ## Estrutura
 
 ```text
 crates/
-├── leobackup-core/      # tipos base, erro, configuração e modelos de domínio
-├── leobackup-storage/   # layout do repositório e SQLite (migrações + CRUD)
+├── leobackup-core/      # tipos base, erro, configuração, modelos e primitivas
+├── leobackup-storage/   # layout, SQLite (migrações + CRUD) e ChunkStore
 ├── leobackup-engine/    # pipeline de backup/restauração (Fase 3/5)
 ├── leobackup-daemon/    # watcher e servidor local (Fase 4)
 └── leobackup-cli/       # interface de linha de comando (init/config)
 ```
 
+`leobackup-core` concentra as primitivas do pipeline, independentes de I/O de
+backup: `chunking` (FastCDC), `hashing` (BLAKE3), `compression` (Zstandard),
+`crypto` (AES-256-GCM) e `chunk_file` (envelope persistido).
+
 ## Repositório de backup
 
 ```text
 <raiz>/
-├── data/                 # chunks (Fase 3)
+├── data/                 # chunks: data/<2 hex>/<hash> (Fase 3)
 ├── metadata/
 │   └── index.db          # metadados SQLite (Fase 2)
 └── config/
@@ -73,9 +93,12 @@ migração. Valores padrão relevantes:
 | `compression.level` | 3 |
 | `encryption.enabled` | `true` |
 
-Validações implementadas: `min_size > 0`, `min_size <= avg_size <= max_size`,
-`workers > 0`, `compression.level` entre 1 e 22, `debounce_ms <= 60000`,
-`schema_version <= 1` e ausência de caminhos vazios em `source_dirs`.
+Validações implementadas: limites do FastCDC (`min_size` 64 B–1 MiB,
+`avg_size` 256 B–4 MiB, `max_size` 1 KiB–16 MiB), `min_size <= avg_size <=
+max_size`, `workers > 0`, `compression.level` entre 1 e 22, `debounce_ms <=
+60000`, `schema_version <= 1` e ausência de caminhos vazios em `source_dirs`.
+O motor também exige coerência entre criptografia e chave: habilitada sem
+chave (ou vice-versa) é erro de construção.
 
 ## Banco de metadados (Fase 2)
 
@@ -105,8 +128,37 @@ Regras e garantias:
 - Caminhos são persistidos como `TEXT` (UTF-8). Caminhos que não possam ser
   representados como UTF-8 não são suportados nesta fase.
 
-## Uso
+## Pipeline de backup (Fase 3)
 
+`BackupEngine` executa, por arquivo:
+
+1. valida que a origem é arquivo regular e captura tamanho, mtime e
+   permissões (Unix);
+2. lê em fluxo e divide com FastCDC;
+3. calcula BLAKE3 de cada chunk;
+4. reutiliza o chunk se ele existe no índice **e** em `data/`; caso o
+   metadado exista sem o arquivo, regrava o conteúdo;
+5. comprime com Zstandard, criptografa se habilitado e grava de forma atômica;
+6. confirma que a origem não mudou e faz o commit transacional do arquivo e
+   de `file_chunks`.
+
+`backup_files` cria um snapshot, continua após erros por arquivo e o finaliza
+como `completed` ou `failed`, devolvendo um `BackupReport` com os arquivos
+gravados e as falhas.
+
+### Envelope de chunk (`LBK1`)
+
+```text
+0    4   magic "LBK1"
+4    1   flags: bit0 = criptografado, bit1 = comprimido
+5   12   nonce AES-GCM (zeros quando não criptografado)
+17   N   payload (ciphertext + tag, ou bytes comprimidos)
+```
+
+`compressed_size` em `chunks` corresponde ao tamanho total do envelope em
+disco. Mudanças de formato exigem nova versão de magic.
+
+## Uso
 
 ```bash
 cargo run -p leobackup-cli -- init --repo ./repo
@@ -115,6 +167,10 @@ cargo run -p leobackup-cli -- config --repo ./repo
 
 `init` nunca sobrescreve uma configuração existente sem `--force` e
 cria/migra `metadata/index.db`.
+
+O backup pela CLI será exposto na Fase 7. Por enquanto o pipeline é usado
+programaticamente: `BackupEngine::new(store, chunks, settings, key)` seguido
+de `backup_files(&caminhos)`.
 
 ## Verificações
 
@@ -134,10 +190,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   backup, então fica em `core`. Se crescer, pode ser extraída sem alterar o
   formato persistido.
 - **Dependências pesadas**: `notify`, `fastcdc`, `blake3`, `zstd` e
-  `aes-gcm` permanecem declaradas em `[workspace.dependencies]` e só serão
-  vinculadas às crates donas quando cada fase as utilizar. `rusqlite` foi
-  vinculada na Fase 2. Isso segue o item "Gerenciamento de Dependências" do
-  backlog sem compilar código ainda não usado.
+  `aes-gcm` permanecem declaradas em `[workspace.dependencies]` e são
+  vinculadas às crates donas quando cada fase as utiliza: `rusqlite` na
+  Fase 2; `fastcdc`, `blake3`, `zstd` e `aes-gcm` na Fase 3 (em `core`).
+  `notify` será vinculada na Fase 4. Isso segue o item "Gerenciamento de
+  Dependências" do backlog sem compilar código ainda não usado.
 - **Escrita atômica de configuração**: `settings.json` é gravado em um
   temporário no mesmo diretório e renomeado ao final.
 - **Validação de `source_dirs`**: apenas estrutura (caminho não vazio). A
@@ -166,3 +223,27 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 - **Sem exclusão física de chunks órfãos**: remover um snapshot zera
   `reference_count`, mas o arquivo/chunk só é removido pelo pruning
   (Fase 6).
+
+### Fase 3
+
+- **Primitivas em `core`**: chunking, hashing, compressão, criptografia e
+  envelope ficam em `leobackup-core` para teste isolado e reuso pela
+  restauração (Fase 5), sem depender de SQLite.
+- **Envelope sempre comprimido**: a flag de compressão existe para permitir
+  payloads não comprimidos no futuro, mas `encode_chunk` sempre comprime.
+- **Deduplicação exige disco + índice**: um metadado órfão não é considerado
+  suficiente; o chunk é regravado antes do commit.
+- **Commit após persistência**: os chunks são gravados fora da transação
+  SQLite; a transação só publica `files`/`file_chunks` quando todos existem.
+  Um crash entre a gravação e o commit deixa chunks sem referência, tratados
+  pela rotina de recuperação da Fase 6.
+- **Detecção de mudança por tamanho/mtime**: heurística barata para a fase;
+  não cobre alterações com mesmo tamanho e mtime preservado.
+- **Falha por arquivo não aborta o lote**: o snapshot é marcado `failed` se
+  qualquer arquivo falhar, mesmo que os demais tenham sido gravados, para
+  evitar declarar um snapshot completo incorretamente.
+- **Chave em memória**: `EncryptionKey` redige o `Debug` e zera os bytes no
+  `Drop` (best-effort). Derivação/armazenamento/rotação de chaves continuam
+  pendentes e serão decididos antes de expor a CLI de chaves.
+- **Snapshots de arquivo único**: `backup_file` exige snapshot `in-progress`,
+  mantendo a mesma garantia usada por `backup_files`.

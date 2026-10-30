@@ -27,4 +27,8 @@ pub enum StorageError {
     /// Dado persistido ou recebido em formato inconsistente.
     #[error("dado inválido: {0}")]
     InvalidData(String),
+
+    /// Snapshot inexistente ou fora do estado que permite commit de arquivos.
+    #[error("snapshot {0} não está disponível para commit (inexistente ou fora de in-progress)")]
+    SnapshotUnavailable(i64),
 }

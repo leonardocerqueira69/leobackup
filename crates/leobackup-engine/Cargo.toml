@@ -9,3 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+leobackup-core = { path = "../leobackup-core" }
+leobackup-storage = { path = "../leobackup-storage" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

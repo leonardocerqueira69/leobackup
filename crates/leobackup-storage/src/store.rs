@@ -231,6 +231,80 @@ impl MetadataStore {
         row.map(map_file).transpose()
     }
 
+    /// Commit atômico dos metadados de um arquivo e de seus chunks.
+    ///
+    /// Só aceita snapshots em `in-progress`. A operação insere o arquivo e
+    /// todas as associações ordenadas na mesma transação; qualquer falha
+    /// (snapshot inválido, caminho duplicado, chunk inexistente) reverte
+    /// tudo. Os chunks devem já estar persistidos no disco antes da chamada.
+    pub fn commit_file<S: AsRef<str>>(
+        &mut self,
+        snapshot_id: SnapshotId,
+        path: &str,
+        permissions: Option<u32>,
+        modification_time: Option<i64>,
+        size: u64,
+        chunk_ids: &[S],
+    ) -> Result<FileRecord, StorageError> {
+        if path.is_empty() {
+            return Err(StorageError::InvalidData(
+                "files.path não pode ser vazio".to_string(),
+            ));
+        }
+
+        let size_i64 = i64_from_u64(size, "files.size")?;
+        let permissions_i64 = permissions.map(i64::from);
+
+        let tx = self.conn.transaction()?;
+
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM snapshots WHERE id = ?1",
+                params![snapshot_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if status.as_deref() != Some("in-progress") {
+            return Err(StorageError::SnapshotUnavailable(snapshot_id));
+        }
+
+        tx.execute(
+            "INSERT INTO files (snapshot_id, path, permissions, modification_time, size)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                snapshot_id,
+                path,
+                permissions_i64,
+                modification_time,
+                size_i64
+            ],
+        )?;
+        let file_id = tx.last_insert_rowid();
+
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO file_chunks (file_id, chunk_id, position) VALUES (?1, ?2, ?3)",
+            )?;
+            for (position, chunk_id) in chunk_ids.iter().enumerate() {
+                let position_i64 = i64::try_from(position).map_err(|_| {
+                    StorageError::InvalidData("posição de chunk excede i64::MAX".to_string())
+                })?;
+                stmt.execute(params![file_id, chunk_id.as_ref(), position_i64])?;
+            }
+        }
+
+        tx.commit()?;
+
+        Ok(FileRecord {
+            id: file_id,
+            snapshot_id,
+            path: path.to_string(),
+            permissions,
+            modification_time,
+            size,
+        })
+    }
+
     /// Lista os arquivos de um snapshot, em ordem de caminho.
     pub fn list_files(&self, snapshot_id: SnapshotId) -> Result<Vec<FileRecord>, StorageError> {
         let mut stmt = self.conn.prepare(
@@ -721,6 +795,37 @@ mod tests {
             store.schema_version().unwrap(),
             migrations::CURRENT_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn commit_file_is_atomic_and_requires_open_snapshot() {
+        let (_dir, mut store) = open_temp();
+        let snapshot = store.create_snapshot(0).unwrap();
+        store.insert_chunk("a", 1, 1).unwrap();
+
+        let file = store
+            .commit_file(snapshot.id, "/f", None, None, 3, &["a"])
+            .unwrap();
+        assert_eq!(store.list_file_chunks(file.id).unwrap().len(), 1);
+
+        // Caminho duplicado no mesmo snapshot: falha sem deixar resíduos.
+        assert!(store
+            .commit_file(snapshot.id, "/f", None, None, 3, &["a"])
+            .is_err());
+        assert_eq!(store.list_files(snapshot.id).unwrap().len(), 1);
+
+        // Chunk inexistente: reverte o arquivo e as associações.
+        assert!(store
+            .commit_file(snapshot.id, "/g", None, None, 3, &["missing"])
+            .is_err());
+        assert_eq!(store.list_files(snapshot.id).unwrap().len(), 1);
+
+        // Snapshot concluído não aceita novos commits.
+        assert!(store.complete_snapshot(snapshot.id).unwrap());
+        assert!(matches!(
+            store.commit_file(snapshot.id, "/h", None, None, 0, &[] as &[&str]),
+            Err(StorageError::SnapshotUnavailable(_))
+        ));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::chunking::ChunkingParams;
 use crate::error::CoreError;
 
 /// Versão atual do esquema persistido de `settings.json`.
@@ -166,17 +167,17 @@ impl Default for ChunkingSettings {
 
 impl ChunkingSettings {
     fn validate(&self) -> Result<(), CoreError> {
-        if self.min_size == 0 {
-            return Err(CoreError::InvalidConfig(
-                "chunking.min_size deve ser maior que zero".to_string(),
-            ));
-        }
-        if !(self.min_size <= self.avg_size && self.avg_size <= self.max_size) {
-            return Err(CoreError::InvalidConfig(format!(
-                "chunking inválido: exige min_size <= avg_size <= max_size (min={}, avg={}, max={})",
-                self.min_size, self.avg_size, self.max_size
-            )));
-        }
+        let min_size = u32::try_from(self.min_size).map_err(|_| {
+            CoreError::InvalidConfig("chunking.min_size excede u32::MAX".to_string())
+        })?;
+        let avg_size = u32::try_from(self.avg_size).map_err(|_| {
+            CoreError::InvalidConfig("chunking.avg_size excede u32::MAX".to_string())
+        })?;
+        let max_size = u32::try_from(self.max_size).map_err(|_| {
+            CoreError::InvalidConfig("chunking.max_size excede u32::MAX".to_string())
+        })?;
+
+        ChunkingParams::new(min_size, avg_size, max_size)?;
         Ok(())
     }
 }
