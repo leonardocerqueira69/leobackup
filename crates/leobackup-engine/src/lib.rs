@@ -8,8 +8,10 @@
 
 pub mod backup;
 pub mod error;
+pub mod maintenance;
 pub mod restore;
 
 pub use backup::{BackupEngine, BackupReport, FileFailure};
 pub use error::EngineError;
+pub use maintenance::{run_maintenance, MaintenanceReport, ScrubResult};
 pub use restore::{RestoreEngine, RestoreOptions, RestoreReport};

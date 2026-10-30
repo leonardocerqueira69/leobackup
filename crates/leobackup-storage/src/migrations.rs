@@ -68,8 +68,16 @@ BEGIN
 END;
 "#;
 
+/// Registra chunks corrompidos detectados pelo scrubbing (Fase 6).
+const MIGRATION_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS corrupted_chunks (
+    chunk_id TEXT PRIMARY KEY REFERENCES chunks(hash_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_corrupted_chunks_chunk ON corrupted_chunks(chunk_id);
+"#;
+
 /// Migrações conhecidas, em ordem. O índice + 1 é a versão de destino.
-const MIGRATIONS: &[&str] = &[MIGRATION_V1];
+const MIGRATIONS: &[&str] = &[MIGRATION_V1, MIGRATION_V2];
 
 /// Versão de esquema suportada por esta build.
 pub const CURRENT_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

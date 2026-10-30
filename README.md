@@ -478,3 +478,30 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   SQLite, chunking e criptografia usam `?`. Os testes incluem casos de erro
   relevantes (chunk ausente, corrupto, chave errada, snapshot incompleto,
   traversal de caminho, symlink escape, conflito de destino).
+
+### Fase 6 — Resiliência, Manutenção e Limpeza (implementada, ainda não integrada ao daemon/CLI)
+
+- **Crash recovery** (`clean_orphan_chunks`): identifica chunks físicos no
+  disco (`data/`) que não possuem referência em `chunks` no banco e os
+  remove. A rotina é segura para execução repetida.
+- **Pruning** (`prune_chunks`): identifica chunks com `reference_count = 0`
+  no banco, remove o registro (`delete_chunk`) e o arquivo físico. Só
+  executa após confirmar que `reference_count` é zero (evita exclusão
+  prematura).
+- **Scrubbing** (`scrub_chunks`): lê chunks armazenados (amostra ou todos),
+  descriptografa (quando aplicável), recalcula `hashing::hash_chunk` e
+  compara com o hash registrado (`hash_id`). Se houver falha, registra
+  o chunk em `corrupted_chunks` (`mark_chunk_corrupted`). Nenhum dado não
+  autenticado é aceito.
+- **Migração V2** (`corrupted_chunks`): adiciona a tabela `corrupted_chunks`
+  e o índice `idx_corrupted_chunks_chunk`, com `ON DELETE CASCADE` para
+  manter consistência quando um chunk é removido pelo pruning.
+- **Recompute antes de limpar**: `run_maintenance` executa
+  `recompute_reference_counts()` antes do pruning, garantindo que a
+  contagem esteja atualizada após qualquer alteração no banco.
+- Testes adicionados (`crash_recovery_removes_orphan_chunks`,
+  `pruning_removes_unreferenced_chunks`, `scrub_detects_corruption`).
+
+A integração com daemon/CLI será feita na Fase 7.
+
+As fases 7 e 8 ainda não foram implementadas.

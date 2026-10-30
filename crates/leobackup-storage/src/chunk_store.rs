@@ -110,6 +110,53 @@ impl ChunkStore {
         Ok(metadata.len())
     }
 
+    /// Lista todos os hashes armazenados fisicamente no disco (`data/`).
+    pub fn list_stored_hashes(&self) -> Result<Vec<String>, StorageError> {
+        let mut hashes = Vec::new();
+        for entry in fs::read_dir(self.data_dir()).map_err(|source| StorageError::Io {
+            path: self.data_dir().to_path_buf(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| StorageError::Io {
+                path: self.data_dir().to_path_buf(),
+                source,
+            })?;
+            if entry
+                .file_type()
+                .map_err(|source| StorageError::Io {
+                    path: entry.path(),
+                    source,
+                })?
+                .is_dir()
+            {
+                for chunk_file in fs::read_dir(entry.path()).map_err(|source| StorageError::Io {
+                    path: entry.path(),
+                    source,
+                })? {
+                    let chunk_file = chunk_file.map_err(|source| StorageError::Io {
+                        path: entry.path(),
+                        source,
+                    })?;
+                    if chunk_file
+                        .file_type()
+                        .map_err(|source| StorageError::Io {
+                            path: chunk_file.path(),
+                            source,
+                        })?
+                        .is_file()
+                    {
+                        if let Ok(name) = chunk_file.file_name().into_string() {
+                            if is_valid_hash(&name) {
+                                hashes.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(hashes)
+    }
+
     /// Lê o conteúdo armazenado de um chunk.
     pub fn read_chunk(&self, hash: &str) -> Result<Vec<u8>, StorageError> {
         let path = self.chunk_path(hash)?;

@@ -412,6 +412,36 @@ impl MetadataStore {
         row.map(map_chunk).transpose()
     }
 
+    /// Remove um chunk do banco.
+    ///
+    /// Só remove se não houver referências (`ON DELETE RESTRICT` protege,
+    /// mas a contagem de referências deve ser zero antes da chamada).
+    pub fn delete_chunk(&mut self, hash_id: &str) -> Result<bool, StorageError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM chunks WHERE hash_id = ?1", params![hash_id])?;
+        Ok(changed == 1)
+    }
+
+    /// Verifica se um chunk está marcado como corrompido.
+    pub fn is_chunk_corrupted(&self, hash_id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM corrupted_chunks WHERE chunk_id = ?1",
+            params![hash_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Marca um chunk como corrompido.
+    pub fn mark_chunk_corrupted(&mut self, hash_id: &str) -> Result<bool, StorageError> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO corrupted_chunks (chunk_id) VALUES (?1)",
+            params![hash_id],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Lista todos os chunks conhecidos.
     pub fn list_chunks(&self) -> Result<Vec<ChunkRecord>, StorageError> {
         let mut stmt = self.conn.prepare(
