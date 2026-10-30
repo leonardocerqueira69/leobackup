@@ -6,11 +6,13 @@
 //! ├── metadata/
 //! │   └── index.db          # metadados (SQLite, Fase 2)
 //! └── config/
-//!     └── settings.json     # configuração
+//!     ├── settings.json     # configuração
+//!     └── daemon.token      # token do servidor local (Fase 4)
 //! ```
 //!
 //! A inicialização cria os diretórios ausentes de forma idempotente e nunca
-//! remove ou sobrescreve dados existentes.
+//! remove ou sobrescreve dados existentes. O token é criado pelo daemon, não
+//! por `ensure()`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +33,9 @@ pub const SETTINGS_FILE: &str = "settings.json";
 
 /// Nome do banco de metadados.
 pub const DB_FILE: &str = "index.db";
+
+/// Nome do arquivo com o token de autenticação do servidor local.
+pub const TOKEN_FILE: &str = "daemon.token";
 
 /// Layout do repositório de backup, derivado de sua raiz.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +85,14 @@ impl RepositoryLayout {
     /// Caminho de `metadata/index.db`.
     pub fn database_path(&self) -> PathBuf {
         self.metadata_dir().join(DB_FILE)
+    }
+
+    /// Caminho de `config/daemon.token`.
+    ///
+    /// O arquivo é criado pelo daemon na primeira execução e deve ter
+    /// permissões restritas ao usuário atual.
+    pub fn token_path(&self) -> PathBuf {
+        self.config_dir().join(TOKEN_FILE)
     }
 
     /// Garante que `data/`, `metadata/` e `config/` existam.
@@ -152,6 +165,10 @@ mod tests {
         assert_eq!(
             layout.database_path(),
             Path::new("repo").join("metadata").join("index.db")
+        );
+        assert_eq!(
+            layout.token_path(),
+            Path::new("repo").join("config").join("daemon.token")
         );
     }
 }

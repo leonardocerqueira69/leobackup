@@ -41,6 +41,28 @@ impl EncryptionKey {
         Self(bytes)
     }
 
+    /// Cria uma chave a partir de 64 caracteres hexadecimais.
+    ///
+    /// Espaços em branco nas extremidades são ignorados. A mensagem de erro
+    /// nunca inclui o conteúdo informado, que é tratado como segredo.
+    pub fn from_hex(value: &str) -> Result<Self, CoreError> {
+        let value = value.trim();
+        if value.len() != KEY_LEN * 2 {
+            return Err(CoreError::InvalidConfig(format!(
+                "chave deve ter {} caracteres hexadecimais",
+                KEY_LEN * 2
+            )));
+        }
+
+        let mut bytes = [0u8; KEY_LEN];
+        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = hex_value(chunk[0])?;
+            let low = hex_value(chunk[1])?;
+            bytes[index] = (high << 4) | low;
+        }
+        Ok(Self(bytes))
+    }
+
     /// Bytes da chave. Não exponha em logs.
     pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
         &self.0
@@ -56,6 +78,17 @@ impl std::fmt::Debug for EncryptionKey {
 impl Drop for EncryptionKey {
     fn drop(&mut self) {
         self.0.fill(0);
+    }
+}
+
+fn hex_value(byte: u8) -> Result<u8, CoreError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(CoreError::InvalidConfig(
+            "chave contém caracteres não hexadecimais".to_string(),
+        )),
     }
 }
 
@@ -163,5 +196,40 @@ mod tests {
             EncryptionKey::generate().as_bytes(),
             EncryptionKey::generate().as_bytes()
         );
+    }
+
+    #[test]
+    fn from_hex_accepts_valid_keys_case_insensitively() {
+        let value = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let key = EncryptionKey::from_hex(value).unwrap();
+        let mut expected = [0u8; KEY_LEN];
+        for (index, byte) in expected.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        assert_eq!(key.as_bytes(), &expected);
+
+        let upper = value.to_uppercase();
+        assert_eq!(
+            EncryptionKey::from_hex(&upper).unwrap().as_bytes(),
+            &expected
+        );
+        assert_eq!(
+            EncryptionKey::from_hex(&format!("  {value}\n"))
+                .unwrap()
+                .as_bytes(),
+            &expected
+        );
+    }
+
+    #[test]
+    fn from_hex_rejects_invalid_values_without_echoing_them() {
+        let error = EncryptionKey::from_hex("segredo-invalido").unwrap_err();
+        let rendered = error.to_string();
+        assert!(!rendered.contains("segredo-invalido"));
+
+        assert!(EncryptionKey::from_hex("").is_err());
+        assert!(EncryptionKey::from_hex("zz").is_err());
+        assert!(EncryptionKey::from_hex(&"0".repeat(63)).is_err());
+        assert!(EncryptionKey::from_hex(&"g".repeat(64)).is_err());
     }
 }

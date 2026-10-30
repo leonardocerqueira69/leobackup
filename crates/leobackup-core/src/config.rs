@@ -28,6 +28,9 @@ const ZSTD_MAX_LEVEL: i32 = 22;
 /// Janela máxima de debounce aceita para eventos do watcher.
 const MAX_DEBOUNCE_MS: u64 = 60_000;
 
+/// Capacidade máxima aceita para a fila de eventos do watcher.
+const MAX_QUEUE_CAPACITY: usize = 1_000_000;
+
 /// Configuração persistida do LeoBackup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -48,6 +51,8 @@ pub struct Settings {
     pub compression: CompressionSettings,
     /// Parâmetros de criptografia em repouso.
     pub encryption: EncryptionSettings,
+    /// Configuração do servidor local do daemon.
+    pub daemon: DaemonSettings,
 }
 
 impl Default for Settings {
@@ -61,6 +66,7 @@ impl Default for Settings {
             monitoring: MonitoringSettings::default(),
             compression: CompressionSettings::default(),
             encryption: EncryptionSettings::default(),
+            daemon: DaemonSettings::default(),
         }
     }
 }
@@ -80,6 +86,7 @@ impl Settings {
         self.concurrency.validate()?;
         self.monitoring.validate()?;
         self.compression.validate()?;
+        self.daemon.validate()?;
 
         for dir in &self.source_dirs {
             if dir.as_os_str().is_empty() {
@@ -240,6 +247,10 @@ pub struct MonitoringSettings {
     pub enabled: bool,
     /// Janela de coalescência de eventos, em milissegundos.
     pub debounce_ms: u64,
+    /// Capacidade máxima de caminhos pendentes na fila de eventos.
+    pub queue_capacity: usize,
+    /// Se uma varredura completa deve ocorrer na inicialização.
+    pub initial_scan: bool,
 }
 
 impl Default for MonitoringSettings {
@@ -247,6 +258,8 @@ impl Default for MonitoringSettings {
         Self {
             enabled: true,
             debounce_ms: 500,
+            queue_capacity: 10_000,
+            initial_scan: true,
         }
     }
 }
@@ -256,6 +269,12 @@ impl MonitoringSettings {
         if self.debounce_ms > MAX_DEBOUNCE_MS {
             return Err(CoreError::InvalidConfig(format!(
                 "monitoring.debounce_ms excede o máximo de {MAX_DEBOUNCE_MS} ms"
+            )));
+        }
+        if !(1..=MAX_QUEUE_CAPACITY).contains(&self.queue_capacity) {
+            return Err(CoreError::InvalidConfig(format!(
+                "monitoring.queue_capacity deve estar entre 1 e {MAX_QUEUE_CAPACITY} (atual: {})",
+                self.queue_capacity
             )));
         }
         Ok(())
@@ -302,6 +321,38 @@ pub struct EncryptionSettings {
 impl Default for EncryptionSettings {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// Configuração do servidor de comunicação local do daemon.
+///
+/// O servidor escuta apenas em `127.0.0.1`; `port` não pode ser zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DaemonSettings {
+    /// Se o servidor local deve ser iniciado.
+    pub enabled: bool,
+    /// Porta TCP em `127.0.0.1`.
+    pub port: u16,
+}
+
+impl Default for DaemonSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 47_821,
+        }
+    }
+}
+
+impl DaemonSettings {
+    fn validate(&self) -> Result<(), CoreError> {
+        if self.port == 0 {
+            return Err(CoreError::InvalidConfig(
+                "daemon.port deve ser maior que zero".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -352,6 +403,32 @@ mod tests {
     fn rejects_zero_workers() {
         let mut settings = Settings::default();
         settings.concurrency.workers = 0;
+        assert!(matches!(
+            settings.validate(),
+            Err(CoreError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_queue_capacity() {
+        let mut settings = Settings::default();
+        settings.monitoring.queue_capacity = 0;
+        assert!(matches!(
+            settings.validate(),
+            Err(CoreError::InvalidConfig(_))
+        ));
+
+        settings.monitoring.queue_capacity = MAX_QUEUE_CAPACITY + 1;
+        assert!(matches!(
+            settings.validate(),
+            Err(CoreError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_daemon_port() {
+        let mut settings = Settings::default();
+        settings.daemon.port = 0;
         assert!(matches!(
             settings.validate(),
             Err(CoreError::InvalidConfig(_))

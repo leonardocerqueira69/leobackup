@@ -81,6 +81,33 @@ impl BackupEngine {
         &self.chunks
     }
 
+    /// Cria um snapshot vazio em `in-progress`.
+    ///
+    /// Útil para lotes que processam vários arquivos em um mesmo ponto no
+    /// tempo. O snapshot só deve ser finalizado depois que todos os arquivos
+    /// pretendidos foram commitados.
+    pub fn begin_snapshot(&mut self) -> Result<Snapshot, EngineError> {
+        Ok(self.store.create_snapshot(now_epoch_seconds()?)?)
+    }
+
+    /// Marca um snapshot como `completed` e retorna seu estado atualizado.
+    pub fn complete_snapshot(&mut self, id: SnapshotId) -> Result<Snapshot, EngineError> {
+        self.store.complete_snapshot(id)?;
+        self.snapshot_after_update(id)
+    }
+
+    /// Marca um snapshot como `failed` e retorna seu estado atualizado.
+    pub fn fail_snapshot(&mut self, id: SnapshotId) -> Result<Snapshot, EngineError> {
+        self.store.fail_snapshot(id)?;
+        self.snapshot_after_update(id)
+    }
+
+    fn snapshot_after_update(&self, id: SnapshotId) -> Result<Snapshot, EngineError> {
+        self.store
+            .get_snapshot(id)?
+            .ok_or(EngineError::SnapshotLost(id))
+    }
+
     /// Cria um snapshot, faz backup dos arquivos e o finaliza.
     ///
     /// Erros por arquivo não interrompem os demais. Se qualquer arquivo falhar,

@@ -45,7 +45,24 @@ documentos do projeto.
 - Detecção de origem alterada durante a leitura (tamanho/mtime) e falhas por
   arquivo sem interromper o restante; snapshot vira `failed` se algo falhar.
 
-As fases 4 a 8 ainda não foram implementadas.
+### Fase 4 — Daemon e Monitoramento (concluída)
+
+- Watcher baseado em `notify` para criação, modificação, remoção e renomeação,
+  com filtragem de eventos do próprio repositório.
+- Fila de eventos em memória com capacidade limitada, coalescência por
+  caminho, debounce por caminho e sinalização de `rescan` quando a fila
+  transborda (nenhuma alteração é descartada em silêncio).
+- Worker único e serializado: somente ele acessa `BackupEngine`/SQLite; o
+  watcher e o servidor apenas enfileiram trabalho.
+- Varredura inicial opcional (`monitoring.initial_scan`) e varredura de
+  diretórios criados/movidos, sem carregar a lista completa de arquivos em
+  memória.
+- Servidor local autenticado por token, escutando apenas em `127.0.0.1`, com
+  comandos `status`, `backup_now` e `shutdown`.
+- Encerramento gracioso por Ctrl+C ou comando remoto, com finalização segura
+  do lote corrente.
+
+As fases 5 a 8 ainda não foram implementadas.
 
 ## Estrutura
 
@@ -70,7 +87,8 @@ backup: `chunking` (FastCDC), `hashing` (BLAKE3), `compression` (Zstandard),
 ├── metadata/
 │   └── index.db          # metadados SQLite (Fase 2)
 └── config/
-    └── settings.json     # configuração
+    ├── settings.json     # configuração
+    └── daemon.token      # token local criado na primeira execução (Fase 4)
 ```
 
 ## Configuração (`config/settings.json`)
@@ -90,13 +108,18 @@ migração. Valores padrão relevantes:
 | `retention.monthly_months` | 12 |
 | `monitoring.enabled` | `true` |
 | `monitoring.debounce_ms` | 500 |
+| `monitoring.queue_capacity` | 10000 |
+| `monitoring.initial_scan` | `true` |
 | `compression.level` | 3 |
 | `encryption.enabled` | `true` |
+| `daemon.enabled` | `true` |
+| `daemon.port` | 47821 |
 
 Validações implementadas: limites do FastCDC (`min_size` 64 B–1 MiB,
 `avg_size` 256 B–4 MiB, `max_size` 1 KiB–16 MiB), `min_size <= avg_size <=
 max_size`, `workers > 0`, `compression.level` entre 1 e 22, `debounce_ms <=
-60000`, `schema_version <= 1` e ausência de caminhos vazios em `source_dirs`.
+60000`, `queue_capacity` entre 1 e 1.000.000, `daemon.port > 0`,
+`schema_version <= 1` e ausência de caminhos vazios em `source_dirs`.
 O motor também exige coerência entre criptografia e chave: habilitada sem
 chave (ou vice-versa) é erro de construção.
 
@@ -158,6 +181,87 @@ gravados e as falhas.
 `compressed_size` em `chunks` corresponde ao tamanho total do envelope em
 disco. Mudanças de formato exigem nova versão de magic.
 
+## Daemon e comunicação local (Fase 4)
+
+### Protocolo escolhido
+
+O contrato entre CLI e daemon é **TCP em `127.0.0.1` com JSON delimitado por
+linha e token de 256 bits**. Cada conexão transporta exatamente uma
+requisição e uma resposta:
+
+```json
+{"token":"<64 caracteres hex>","command":"status"}
+{"ok":true,"status":{"uptime_secs":12,"source_dirs":1,"queued_events":0,...}}
+```
+
+Comandos disponíveis:
+
+| Comando | Efeito |
+|---|---|
+| `status` | Lê contadores em memória; não bloqueia durante um backup |
+| `backup_now` | Solicita uma varredura completa e devolve o resumo do lote |
+| `shutdown` | Solicita encerramento gracioso |
+
+Respostas de erro têm `{"ok":false,"error":"..."}`. Limites: requisição de até
+8 KiB, resposta de até 64 KiB, 16 conexões simultâneas e timeouts de I/O.
+
+A escolha foi feita antes de construir o cliente:
+
+- **TCP em loopback + JSON**: portátil (Windows/Linux/macOS), sem dependência
+  nativa, depurável com ferramentas comuns e suficiente para comandos
+  pequenos. O bind é fixo em `127.0.0.1`, nunca em todas as interfaces.
+- **IPC por socket de domínio/named pipe**: mais restrito por ACL do sistema,
+  porém exige código específico por plataforma e permissões diferentes em cada
+  uma; fica como evolução se o loopback não bastar.
+- **gRPC/REST local**: traria dependências e um servidor HTTP completo sem
+  ganho para três comandos; o custo de manutenção não se justifica nesta fase.
+
+O token é gerado com o RNG do sistema na primeira execução, gravado em
+`config/daemon.token` com `create_new` (nunca sobrescrito) e modo `0600` em
+Unix. No Windows as permissões são herdadas do diretório do repositório. A
+comparação é feita em tempo constante e o token nunca é impresso pelo daemon,
+pela CLI ou incluído em mensagens de erro.
+
+### Funcionamento
+
+- `Daemon::start` valida a configuração, canonicaliza as origens, abre o
+  SQLite, reserva a porta, inicia o worker (que configura o watcher e confirma
+  a inicialização) e só então inicia o servidor.
+- Origens dentro do repositório são rejeitadas, para evitar varreduras que não
+  fariam backup de nada. Origens duplicadas são deduplicadas.
+- O watcher usa `notify` de forma recursiva. Eventos de acesso puro são
+  ignorados; renomeações geram remoção + inclusão; eventos com
+  `need_rescan` disparam varredura completa.
+- A fila coalesce eventos do mesmo caminho, aplica `debounce_ms` e tem
+  capacidade máxima (`queue_capacity`). Ao transbordar, marca `rescan_required`
+  e o worker faz uma varredura completa: o evento é descartado, mas a
+  alteração não é perdida em silêncio.
+- Cada lote de eventos (até 256 caminhos) ou varredura completa cria **um
+  snapshot**: os arquivos são gravados com o pipeline da Fase 3, o snapshot é
+  `completed` se todos terminaram bem e `failed` se qualquer arquivo falhou.
+- Remoções são contabilizadas (`deleted_events`), mas ainda não geram
+  tombstones no esquema; a semântica de exclusão será definida com a
+  restauração e a retenção.
+- `BackupNow` e a varredura inicial usam a mesma rotina de varredura do
+  watcher. Diretórios criados/movidos são varridos no momento do evento.
+- Encerramento por Ctrl+C, comando `shutdown` ou queda do canal do worker:
+  o flag é observado entre arquivos, o lote corrente é finalizado (snapshot
+  `failed` se interrompido), a fila é fechada e o servidor drena conexões.
+
+### Limitações desta fase
+
+- Snapshot por lote, não um manifesto completo da árvore. A restauração
+  (Fase 5) precisará combinar snapshots ou o modelo deverá evoluir para
+  registrar a árvore inteira.
+- `concurrency.workers` continua apenas informativo: há um worker para
+  preservar a consistência da conexão `rusqlite` e a ordem dos commits.
+- Sem VSS (item previsto para leitura segura) e sem retenção/scrub, que
+  pertencem às fases seguintes.
+- Sem TLS: o transporte é loopback e autenticado por token; escutar em outra
+  interface exigiria uma decisão de segurança própria.
+- `daemon.enabled=false` inicia o daemon apenas para monitoramento/backup
+  inicial, sem servidor local.
+
 ## Uso
 
 ```bash
@@ -168,9 +272,33 @@ cargo run -p leobackup-cli -- config --repo ./repo
 `init` nunca sobrescreve uma configuração existente sem `--force` e
 cria/migra `metadata/index.db`.
 
-O backup pela CLI será exposto na Fase 7. Por enquanto o pipeline é usado
-programaticamente: `BackupEngine::new(store, chunks, settings, key)` seguido
-de `backup_files(&caminhos)`.
+Para iniciar o daemon:
+
+```bash
+cargo run -p leobackup-daemon -- --repo ./repo --key-file ./chave.hex
+# porta alternativa (ou 0 para efêmera):
+cargo run -p leobackup-daemon -- --repo ./repo --key-file ./chave.hex --port 47822
+```
+
+- `--key-file` aceita 64 caracteres hexadecimais ou 32 bytes brutos. É
+  obrigatório quando `encryption.enabled=true` (padrão). A geração e o
+  armazenamento seguro de chaves serão expostos na Fase 7; até lá, forneça um
+  arquivo gerado por uma fonte criptograficamente segura ou desabilite a
+  criptografia apenas em ambiente de desenvolvimento.
+- O daemon imprime o endereço e o **caminho** do token, nunca o token.
+- Ctrl+C ou o comando `shutdown` encerram de forma graciosa.
+
+O cliente programático fica em `leobackup_daemon::Client`:
+
+```rust
+let client = handle.client()?;
+let status = client.status()?;
+let summary = client.backup_now()?;
+```
+
+O backup pela CLI será exposto na Fase 7. Por enquanto o pipeline também pode
+ser usado diretamente: `BackupEngine::new(store, chunks, settings, key)`
+seguido de `backup_files(&caminhos)`.
 
 ## Verificações
 
@@ -193,7 +321,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   `aes-gcm` permanecem declaradas em `[workspace.dependencies]` e são
   vinculadas às crates donas quando cada fase as utiliza: `rusqlite` na
   Fase 2; `fastcdc`, `blake3`, `zstd` e `aes-gcm` na Fase 3 (em `core`).
-  `notify` será vinculada na Fase 4. Isso segue o item "Gerenciamento de
+  `notify` foi vinculada na Fase 4. Isso segue o item "Gerenciamento de
   Dependências" do backlog sem compilar código ainda não usado.
 - **Escrita atômica de configuração**: `settings.json` é gravado em um
   temporário no mesmo diretório e renomeado ao final.
@@ -247,3 +375,38 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   pendentes e serão decididos antes de expor a CLI de chaves.
 - **Snapshots de arquivo único**: `backup_file` exige snapshot `in-progress`,
   mantendo a mesma garantia usada por `backup_files`.
+
+### Fase 4
+
+- **Protocolo**: TCP em loopback + JSON por linha + token, comparado com IPC
+  nativo e gRPC/REST na seção acima. Cada conexão trata um comando, o que
+  simplifica o encerramento e evita estado de sessão.
+- **Token persistido, nunca sobrescrito**: um arquivo inválido exige remoção
+  manual; o daemon não gera um novo token silenciosamente e não invalida
+  clientes existentes.
+- **Worker único**: o `RecommendedWatcher` do Windows não é `Send`, então ele
+  é criado dentro da thread do worker. A mesma thread é dona exclusiva do
+  `BackupEngine` e da conexão SQLite. `concurrency.workers` fica advisory até
+  existir um pool de conexões/coordenação de chunks.
+- **Fila com overflow explícito**: em vez de crescer sem limite, a fila marca
+  `rescan_required`; o worker responde com varredura completa, que é mais
+  cara, mas recupera a consistência sem perder alterações.
+- **Debounce por caminho**: o prazo reinicia a cada evento do mesmo caminho,
+  agregando gravações típicas de editores e compiladores.
+- **Snapshot por lote**: mantém a garantia da Fase 3 (nenhum snapshot
+  `completed` com falhas) e evita transações longas. A consequência é que
+  `files` descreve apenas o que o lote tocou; a Fase 5 deve definir como
+  restaurar uma árvore completa.
+- **Remoções apenas contabilizadas**: o esquema ainda não tem tombstones.
+  Excluir arquivos do backup exige uma decisão de retenção/restauração que não
+  foi tomada nesta fase.
+- **Servidor independente do monitoramento**: `daemon.enabled=false` permite
+  executar o worker sem IPC; útil para diagnóstico e para ambientes em que a
+  porta não está disponível.
+- **`accept` não bloqueante**: o servidor verifica o flag de encerramento a
+  cada 50 ms. Não é polling do sistema de arquivos — o watcher continua
+  orientado a eventos nativos.
+- **Chave via arquivo**: a CLI do daemon lê a chave de `--key-file`; não há
+  argumento de chave inline (evita exposição no histórico do shell). A
+  gestão completa de chaves (geração, rotação, recuperação) fica para a
+  Fase 7.

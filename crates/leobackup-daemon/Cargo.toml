@@ -8,4 +8,21 @@ license.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "leobackup-daemon"
+path = "src/main.rs"
+
 [dependencies]
+leobackup-core = { path = "../leobackup-core" }
+leobackup-engine = { path = "../leobackup-engine" }
+leobackup-storage = { path = "../leobackup-storage" }
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+ctrlc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

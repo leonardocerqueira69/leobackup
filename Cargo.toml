@@ -36,3 +36,7 @@ fastcdc = "3"
 blake3 = "1"
 zstd = "0.13"
 aes-gcm = "0.10"
+
+# Fase 4: token aleatório do servidor local e encerramento gracioso (Ctrl+C).
+getrandom = "0.2"
+ctrlc = "3"
