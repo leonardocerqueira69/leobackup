@@ -7,6 +7,8 @@
 
 pub mod config;
 pub mod error;
+pub mod model;
 
 pub use config::Settings;
 pub use error::CoreError;
+pub use model::{ChunkRecord, FileChunkLink, FileRecord, Snapshot, SnapshotStatus};

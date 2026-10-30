@@ -15,4 +15,16 @@ pub enum StorageError {
     /// Caminho de repositório inválido.
     #[error("caminho inválido: {0}")]
     InvalidPath(String),
+
+    /// Falha reportada pelo SQLite.
+    #[error("erro de banco de dados: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    /// Falha de configuração ou aplicação de migrações.
+    #[error("erro de migração: {0}")]
+    Migration(String),
+
+    /// Dado persistido ou recebido em formato inconsistente.
+    #[error("dado inválido: {0}")]
+    InvalidData(String),
 }

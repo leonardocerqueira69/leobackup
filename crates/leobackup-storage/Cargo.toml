@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+leobackup-core = { path = "../leobackup-core" }
+rusqlite.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

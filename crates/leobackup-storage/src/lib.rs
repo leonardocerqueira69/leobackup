@@ -1,11 +1,14 @@
 //! Persistência do LeoBackup.
 //!
-//! Nesta fase a crate expõe apenas o layout canônico do repositório de
-//! backup e a rotina idempotente que o inicializa. A conexão SQLite e os
-//! repositórios de metadados serão adicionados na Fase 2.
+//! Expõe o layout canônico do repositório de backup, o banco de metadados
+//! SQLite (`metadata/index.db`) com migrações versionadas e a camada CRUD
+//! usada pelo restante do sistema.
 
 pub mod error;
 pub mod layout;
+pub mod migrations;
+pub mod store;
 
 pub use error::StorageError;
 pub use layout::RepositoryLayout;
+pub use store::MetadataStore;

@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use leobackup_core::Settings;
-use leobackup_storage::RepositoryLayout;
+use leobackup_storage::{MetadataStore, RepositoryLayout};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -72,6 +72,13 @@ fn init(repo: &Path, force: bool) -> anyhow::Result<()> {
         Settings::default().save(&settings_path)?;
         println!("configuração criada: {}", settings_path.display());
     }
+
+    let store = MetadataStore::open(&layout.database_path())?;
+    println!(
+        "banco de metadados pronto: {} (schema v{})",
+        layout.database_path().display(),
+        store.schema_version()?
+    );
 
     println!("repositório inicializado em {}", layout.root().display());
     Ok(())

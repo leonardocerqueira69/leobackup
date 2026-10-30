@@ -23,4 +23,8 @@ pub enum CoreError {
     /// Versão de configuração mais nova do que a suportada.
     #[error("versão de configuração não suportada: {0}")]
     UnsupportedConfigVersion(u32),
+
+    /// Dado persistido ou recebido em formato inesperado.
+    #[error("dado inválido: {0}")]
+    InvalidData(String),
 }
