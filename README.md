@@ -62,7 +62,37 @@ documentos do projeto.
 - Encerramento gracioso por Ctrl+C ou comando remoto, com finalização segura
   do lote corrente.
 
-As fases 5 a 8 ainda não foram implementadas.
+### Fase 5 — Restauração (implementada, ainda não integrada ao daemon/CLI)
+
+- `RestoreEngine` com `RestoreOptions` (`relative_path`, `overwrite`,
+  `allow_incomplete_snapshot`) e `RestoreReport`.
+- `MetadataStore::find_file_by_path` para busca por caminho exato dentro de
+  um snapshot; `list_snapshots` e `list_files` para navegação.
+- Pipeline de reconstrução: ler `file_chunks` na ordem, validar posição,
+  ler o chunk de `data/`, descriptografar/descomprimir com `decode_chunk`,
+  recalcular `hashing::hash_chunk` e comparar com o hash registrado; só
+  concatenar se o hash confere e o tamanho corresponde ao esperado.
+- Validação de `chunk_path`: rejeita `..`, caminhos absolutos, nomes reservados
+  no Windows (`NUL`, `COM1` etc.) e fluxos alternativos NTFS (`nome:fluxo`).
+  A raiz de destino é canonicalizada (`canonical_root`) e cada componente
+  intermediário é verificado: `symlink` que escape da raiz é rejeitado.
+- Escrita atômica: `NamedTempFile` no mesmo sistema de arquivos do destino,
+  `sync_all`, aplicação de permissões e `modification_time` no temporário,
+  e só então `persist_noclobber` (padrão) ou `persist` (quando `overwrite`).
+- Rejeita snapshots `in-progress`/`failed` por padrão; só restaura com
+  `allow_incomplete_snapshot=true`.
+- Erros explícitos por tipo: `SnapshotNotFound`, `FileNotFound`,
+  `SnapshotNotCompleted`, `DestinationExists`, `InvalidRestorePath`,
+  `ChunkMetadataMissing`, `ChunkRead`, `ChunkDecode`, `ChunkHashMismatch`,
+  `ChunkOrder`, `SizeMismatch`. Nenhum erro é silenciado com `let _`.
+- `RestoreEngine` aceita chave opcional, independente de
+  `encryption.enabled`: chunks antigos podem ser criptografados mesmo com a
+  configuração atual desabilitada.
+- `README.md` atualizado e `clippy` limpo.
+
+A integração com daemon/CLI será feita na Fase 7.
+
+As fases 6 a 8 ainda não foram implementadas.
 
 ## Estrutura
 
@@ -410,3 +440,41 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   argumento de chave inline (evita exposição no histórico do shell). A
   gestão completa de chaves (geração, rotação, recuperação) fica para a
   Fase 7.
+
+### Fase 5
+
+- **API por arquivo (não árvore completa nesta fase)**: `restore_file` recebe
+  `file_id`, a raiz de destino e `RestoreOptions`. A restauração de uma
+  árvore completa fica para a Fase 7, com integração ao daemon/CLI.
+- **Chave opcional e independente de `encryption.enabled`**: aceita chave mesmo
+  quando `encryption.enabled = false`, pois chunks antigos podem ter sido
+  gravados com criptografia; se o chunk não for criptografado, a chave é
+  ignorada; se for criptografado e a chave estiver ausente, `decode_chunk`
+  retorna erro explícito (`ChunkDecode`).
+- **Sanitização defensiva**: `sanitize_relative` rejeita componentes
+  `ParentDir`, `RootDir`, `Prefix` e caminhos vazios. No Windows, rejeita
+  nomes reservados (`NUL`, `COM1`...`COM9`, `LPT1`...`LPT9`) e fluxos
+  alternativos (`nome:fluxo`).
+- **Canonicalização com contenção**: `resolve_target` canonicaliza o
+  diretório pai e exige que cada componente intermediário esteja contido em
+  `canonical_root`; symlinks que escapem são rejeitados antes da criação do
+  arquivo.
+- **Publicação atômica**: `NamedTempFile` no mesmo sistema de arquivos,
+  `sync_all`, aplicação de permissões/`mtime`, e só então `persist` ou
+  `persist_noclobber`. Nenhum arquivo parcialmente escrito é publicado.
+- **Validação por hash**: `hashing::hash_chunk` é recalculado sobre cada chunk
+  restaurado; se o hash não confere, o pipeline é interrompido
+  (`ChunkHashMismatch`) sem escrever o arquivo final. Nenhum dado não
+  autenticado é aceito.
+- **Ordem de chunks verificada**: `link.position` deve ser contíguo a partir
+  de zero; se não for, retorna `ChunkOrder` com `expected`/`actual`.
+- **Não sobrescreve silenciosamente**: `overwrite=false` por padrão; quando
+  `true`, `persist` substitui; quando `false` e o destino existe,
+  `persist_noclobber` retorna `DestinationExists` sem modificar o destino.
+- **Snapshots incompletos recusados por padrão**: só restaura
+  `in-progress`/`failed` com `allow_incomplete_snapshot=true`. Isso evita
+  restaurar dados parciais sem consentimento explícito.
+- **Nenhum `unwrap()` ou `expect()` em caminhos externos**: todos os I/O,
+  SQLite, chunking e criptografia usam `?`. Os testes incluem casos de erro
+  relevantes (chunk ausente, corrupto, chave errada, snapshot incompleto,
+  traversal de caminho, symlink escape, conflito de destino).

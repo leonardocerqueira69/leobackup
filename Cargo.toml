@@ -40,3 +40,6 @@ aes-gcm = "0.10"
 # Fase 4: token aleatório do servidor local e encerramento gracioso (Ctrl+C).
 getrandom = "0.2"
 ctrlc = "3"
+
+# Fase 5: preservação de mtime na restauração.
+filetime = "0.2"

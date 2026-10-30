@@ -231,6 +231,37 @@ impl MetadataStore {
         row.map(map_file).transpose()
     }
 
+    /// Busca um arquivo pelo caminho exato dentro de um snapshot.
+    ///
+    /// A comparação é textual (o caminho persistido usa a forma fornecida no
+    /// backup). Retorna `None` quando o snapshot não contém esse caminho.
+    pub fn find_file_by_path(
+        &self,
+        snapshot_id: SnapshotId,
+        path: &str,
+    ) -> Result<Option<FileRecord>, StorageError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, snapshot_id, path, permissions, modification_time, size
+                   FROM files WHERE snapshot_id = ?1 AND path = ?2",
+                params![snapshot_id, path],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        row.map(map_file).transpose()
+    }
+
     /// Commit atômico dos metadados de um arquivo e de seus chunks.
     ///
     /// Só aceita snapshots em `in-progress`. A operação insere o arquivo e
@@ -634,6 +665,36 @@ mod tests {
         assert!(store
             .insert_file(snapshot.id, "/home/user/a.txt", None, None, 1)
             .is_err());
+    }
+
+    #[test]
+    fn finds_file_by_exact_path_within_snapshot() {
+        let (_dir, mut store) = open_temp();
+        let first = store.create_snapshot(10).unwrap();
+        let second = store.create_snapshot(20).unwrap();
+
+        let file = store
+            .insert_file(first.id, "/home/user/a.txt", None, None, 5)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .find_file_by_path(first.id, "/home/user/a.txt")
+                .unwrap(),
+            Some(file.clone())
+        );
+        assert!(store
+            .find_file_by_path(first.id, "/home/user/A.txt")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_file_by_path(second.id, "/home/user/a.txt")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_file_by_path(first.id, "/home/user")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
